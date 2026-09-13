@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: task-engagement-api
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt && alembic upgrade head"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 15
+      - key: RECURRENCE_LEAD_DAYS
+        value: 3
+      - key: CORS_ORIGINS
+        value: '["https://your-frontend.vercel.app"]'
