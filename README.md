@@ -85,20 +85,3 @@ All seeded accounts use the password `Demo1234!`.
 | Team member | omar.member@example.com |
 | Team member | lena.member@example.com |
 | Team member | kofi.member@example.com |
-
-## Design documents
-
-- `docs/superpowers/specs/2026-09-13-task-workflow-design.md`
-- `docs/superpowers/specs/2026-09-13-engagement-recurrence-design.md`
-
-## Deployment
-
-The API runs on Render's free tier and the database on Neon. The free instance
-sleeps after roughly fifteen minutes of inactivity, which would stop the daily
-recurrence job from firing, so UptimeRobot pings `/health` every five minutes to
-keep it awake. `/health` is unauthenticated and touches the database, so the
-same ping also keeps the Neon compute warm.
-
-The recurrence job tolerates being missed regardless: it asks what is due now
-rather than what happened since yesterday, so a skipped day is corrected by the
-next run with no catch-up logic.
