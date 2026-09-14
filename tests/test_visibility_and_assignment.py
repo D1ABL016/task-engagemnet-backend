@@ -28,6 +28,25 @@ async def test_team_member_cannot_read_a_task_they_are_not_party_to(
 
 @pytest.mark.asyncio
 async def test_named_reviewer_can_read_a_task_even_if_not_the_assignee(
+    http_client, db_session, assigned_task, manager_user, auth_headers_for
+):
+    """Reviewer-based visibility applies to a manager, not a team member.
+
+    A team member always sees only tasks assigned to them — being named
+    reviewer on a task grants visibility only for the manager role.
+    """
+    assigned_task.reviewer_id = manager_user.id
+    await db_session.commit()
+
+    response = await http_client.get(
+        f"/api/v1/tasks/{assigned_task.id}",
+        headers=auth_headers_for(manager_user),
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_reviewer_id_grants_no_visibility_to_a_team_member(
     http_client, db_session, assigned_task, other_team_member_user, auth_headers_for
 ):
     assigned_task.reviewer_id = other_team_member_user.id
@@ -37,7 +56,7 @@ async def test_named_reviewer_can_read_a_task_even_if_not_the_assignee(
         f"/api/v1/tasks/{assigned_task.id}",
         headers=auth_headers_for(other_team_member_user),
     )
-    assert response.status_code == 200
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -199,15 +218,16 @@ async def test_changing_only_the_reviewer_on_an_in_progress_task_leaves_assignee
     assigned_task,
     team_member_user,
     other_team_member_user,
-    manager_user,
+    admin_user,
     auth_headers_for,
 ):
+    """Only an admin may change a task's reviewer."""
     task_url = f"/api/v1/tasks/{assigned_task.id}"
     await http_client.post(f"{task_url}/start", headers=auth_headers_for(team_member_user))
 
     response = await http_client.patch(
         f"{task_url}/assignment",
-        headers=auth_headers_for(manager_user),
+        headers=auth_headers_for(admin_user),
         json={"reviewer_id": str(other_team_member_user.id)},
     )
     assert response.status_code == 200
@@ -215,6 +235,18 @@ async def test_changing_only_the_reviewer_on_an_in_progress_task_leaves_assignee
     assert body["status"] == "in_progress"
     assert body["assignee_id"] == str(team_member_user.id)
     assert body["reviewer_id"] == str(other_team_member_user.id)
+
+
+@pytest.mark.asyncio
+async def test_manager_cannot_change_a_task_reviewer(
+    http_client, assigned_task, manager_user, other_team_member_user, auth_headers_for
+):
+    response = await http_client.patch(
+        f"/api/v1/tasks/{assigned_task.id}/assignment",
+        headers=auth_headers_for(manager_user),
+        json={"reviewer_id": str(other_team_member_user.id)},
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -301,12 +333,12 @@ async def test_assigning_a_nonexistent_user_is_rejected_cleanly(
 
 @pytest.mark.asyncio
 async def test_naming_a_nonexistent_reviewer_is_rejected_cleanly(
-    http_client, assigned_task, manager_user, auth_headers_for
+    http_client, assigned_task, admin_user, auth_headers_for
 ):
     bogus_user_id = uuid.uuid4()
     response = await http_client.patch(
         f"/api/v1/tasks/{assigned_task.id}/assignment",
-        headers=auth_headers_for(manager_user),
+        headers=auth_headers_for(admin_user),
         json={"reviewer_id": str(bogus_user_id)},
     )
     assert response.status_code == 409
