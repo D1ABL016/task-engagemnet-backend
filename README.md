@@ -27,8 +27,8 @@ createdb task_management_test
 Then create `backend/.env` with your connection details:
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:PORT/task_management
-TEST_DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:PORT/task_management_test
+DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:PORT/db_name
+TEST_DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:PORT/db_name_test
 JWT_SECRET_KEY=change-me-to-a-long-random-string
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=15
