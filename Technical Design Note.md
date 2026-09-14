@@ -16,14 +16,145 @@
 
 **Entities**: `AppUser`, `Client`, `ServiceType` → `TaskTemplate`, `Engagement`, `Task`, `TaskReview`. Every entity above the leaf level (`Client`, `ServiceType`, `TaskTemplate`, `Engagement`, `Task`) also has a matching `<table>_audit` table, populated only by a trigger.
 
-```
-AppUser ──┬──(manager_id)── Engagement ──(engagement_id)── Task ──(task_id)── TaskReview
-          ├──(assignee_id)──────────────────────────────────┘
-          └──(reviewer_id)─────────────────────────────────┘
+```mermaid
+erDiagram
 
-Client ──(client_id)── Engagement ──(service_type_id)── ServiceType ──(service_type_id)── TaskTemplate
-                                                                              │
-                                                          Task ──(task_template_id, nullable)┘
+    APP_USER {
+        UUID id PK
+        VARCHAR email UK
+        VARCHAR full_name
+        VARCHAR hashed_password
+        ENUM role
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+        TIMESTAMP deleted_at
+        UUID deleted_by FK
+        VARCHAR deletion_reason
+    }
+
+    CLIENT {
+        UUID id PK
+        VARCHAR name
+        VARCHAR contact_email
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+        UUID updated_by FK
+        TIMESTAMP deleted_at
+        UUID deleted_by FK
+        VARCHAR deletion_reason
+    }
+
+    SERVICE_TYPE {
+        UUID id PK
+        VARCHAR name UK
+        TEXT description
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+        UUID updated_by FK
+        TIMESTAMP deleted_at
+        UUID deleted_by FK
+        VARCHAR deletion_reason
+    }
+
+    TASK_TEMPLATE {
+        UUID id PK
+        UUID service_type_id FK
+        VARCHAR title
+        INT sequence
+        INT default_offset_days
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+        UUID updated_by FK
+    }
+
+    ENGAGEMENT {
+        UUID id PK
+        UUID client_id FK
+        UUID service_type_id FK
+        UUID manager_id FK
+        ENUM engagement_type
+        ENUM recurrence
+        DATE start_date
+        DATE period_start
+        DATE period_end
+        BOOLEAN auto_renew
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+        UUID updated_by FK
+        TIMESTAMP deleted_at
+        UUID deleted_by FK
+        VARCHAR deletion_reason
+    }
+
+    TASK {
+        UUID id PK
+        UUID engagement_id FK
+        UUID task_template_id FK
+        VARCHAR title
+        INT sequence
+        ENUM status
+        UUID assignee_id FK
+        UUID reviewer_id FK
+        DATE due_date
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+        UUID updated_by FK
+        TIMESTAMP deleted_at
+        UUID deleted_by FK
+        VARCHAR deletion_reason
+    }
+
+    TASK_REVIEW {
+        UUID id PK
+        UUID task_id FK
+        UUID reviewer_id FK
+        ENUM decision
+        TEXT comment
+        TIMESTAMP created_at
+    }
+
+    %% =========================
+    %% Core relationships
+    %% =========================
+
+    CLIENT ||--o{ ENGAGEMENT : "has"
+
+    SERVICE_TYPE ||--o{ ENGAGEMENT : "used by"
+    SERVICE_TYPE ||--o{ TASK_TEMPLATE : "defines"
+
+    ENGAGEMENT ||--o{ TASK : "contains"
+    TASK_TEMPLATE o|--o{ TASK : "creates"
+
+    APP_USER ||--o{ ENGAGEMENT : "manages"
+
+    APP_USER ||--o{ TASK : "assigned to"
+    APP_USER ||--o{ TASK : "reviews"
+
+    TASK ||--o{ TASK_REVIEW : "has reviews"
+    APP_USER ||--o{ TASK_REVIEW : "performs"
+
+    %% =========================
+    %% Audit / soft delete FKs
+    %% =========================
+
+    APP_USER o|--o{ APP_USER : "deleted by"
+
+    APP_USER o|--o{ CLIENT : "updated by"
+    APP_USER o|--o{ CLIENT : "deleted by"
+
+    APP_USER o|--o{ SERVICE_TYPE : "updated by"
+    APP_USER o|--o{ SERVICE_TYPE : "deleted by"
+
+    APP_USER o|--o{ TASK_TEMPLATE : "updated by"
+
+    APP_USER o|--o{ ENGAGEMENT : "updated by"
+    APP_USER o|--o{ ENGAGEMENT : "deleted by"
+
+    APP_USER o|--o{ TASK : "updated by"
+    APP_USER o|--o{ TASK : "deleted by"
 ```
 
 - **Relationships**: `Engagement` belongs to a `Client`, a `ServiceType`, and a manager (`AppUser`). `Task` belongs to an `Engagement`, optionally to a `TaskTemplate` (null = ad-hoc task, not generated from a template), has an optional `assignee` and a mandatory `reviewer` (both `AppUser`). `TaskReview` is an append-only history row per review decision on a `Task`.
