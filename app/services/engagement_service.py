@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -65,11 +65,10 @@ async def load_engagement(
     manager-gated at the route pass no actor and get the unfiltered load.
     Only the read route passes one.
 
-    An admin sees every engagement. A manager sees only engagements they
-    manage — not every engagement, the way "manager or admin" used to be
-    treated as one bucket. A team member sees only engagements in which they
-    have at least one visible task. Anyone excluded gets a 404, not a 403,
-    matching the task-level rule.
+    Engagements are a manager/admin surface: an admin sees every engagement,
+    a manager sees only engagements they manage, and a team member sees none
+    at all — a 404, not a 403, matching the task-level rule of not letting a
+    denial confirm the row exists.
     """
     result = await session.execute(
         select(Engagement)
@@ -81,11 +80,7 @@ async def load_engagement(
     if engagement is None:
         raise NotFoundError("Engagement not found")
     if actor_id is not None and actor_role is not None and actor_role is not UserRole.ADMIN:
-        if actor_role is UserRole.MANAGER:
-            visible = engagement.manager_id == actor_id
-        else:
-            visible = bool(visible_tasks(engagement, actor_id, actor_role))
-        if not visible:
+        if actor_role is UserRole.TEAM_MEMBER or engagement.manager_id != actor_id:
             raise NotFoundError("Engagement not found")
     return engagement
 
@@ -97,9 +92,11 @@ async def list_engagements(
     actor_role: UserRole,
 ) -> list[Engagement]:
     """An admin sees every engagement. A manager sees only the engagements
-    they manage. A team member sees only the engagements in which they have
-    at least one task, as assignee or reviewer.
+    they manage. A team member sees none — engagements are a manager/admin
+    surface.
     """
+    if actor_role is UserRole.TEAM_MEMBER:
+        return []
     query = (
         select(Engagement)
         .options(selectinload(Engagement.tasks))
@@ -107,18 +104,6 @@ async def list_engagements(
     )
     if actor_role is UserRole.MANAGER:
         query = query.where(Engagement.manager_id == actor_id)
-    elif actor_role is not UserRole.ADMIN:
-        query = query.where(
-            Engagement.id.in_(
-                select(Task.engagement_id).where(
-                    or_(
-                        Task.assignee_id == actor_id,
-                        Task.reviewer_id == actor_id,
-                    ),
-                    Task.deleted_at.is_(None),
-                )
-            )
-        )
     result = await session.execute(query.order_by(Engagement.start_date.desc()))
     return list(result.scalars().all())
 
