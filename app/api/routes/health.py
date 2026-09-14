@@ -18,3 +18,15 @@ async def health_check(session: AsyncSession = Depends(get_session)) -> dict[str
     """
     await session.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@router.get("/debug/db")
+async def debug_db():
+    from app.config import Settings
+
+    DATABASE_URL = Settings().database_url
+
+    return {
+        "host": DATABASE_URL.split("@")[-1].split("/")[0],
+        "scheme": DATABASE_URL.split("://")[0],
+    }
