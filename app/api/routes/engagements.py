@@ -35,7 +35,7 @@ def _to_response(engagement: Engagement, current_user: CurrentUser) -> Engagemen
     response.tasks = [
         TaskSummary.model_validate(task)
         for task in engagement_service.visible_tasks(
-            engagement, current_user.id, current_user.is_manager_or_admin
+            engagement, current_user.id, current_user.role
         )
     ]
     return response
@@ -57,13 +57,14 @@ async def list_engagements(
     current_user: CurrentUser = Depends(require_any_role),
     session: AsyncSession = Depends(get_session),
 ) -> list[EngagementResponse]:
-    """Managers/admins see every engagement; a team member sees only the
-    engagements they have a task in, each with only their own tasks embedded.
+    """An admin sees every engagement; a manager sees only the engagements
+    they manage; a team member sees only the engagements they have a task
+    in, each with only their own tasks embedded.
     """
     engagements = await engagement_service.list_engagements(
         session,
         actor_id=current_user.id,
-        actor_is_manager_or_admin=current_user.is_manager_or_admin,
+        actor_role=current_user.role,
     )
     return [_to_response(engagement, current_user) for engagement in engagements]
 
@@ -78,7 +79,7 @@ async def read_engagement(
         session,
         engagement_id,
         actor_id=current_user.id,
-        actor_is_manager_or_admin=current_user.is_manager_or_admin,
+        actor_role=current_user.role,
     )
     return _to_response(engagement, current_user)
 

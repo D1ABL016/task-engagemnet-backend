@@ -15,6 +15,7 @@ from app.models.service_type import ServiceType
 from app.models.task import Task
 from app.models.user import AppUser
 from app.schemas.engagement import EngagementCreate, EngagementUpdate
+from app.services import task_service
 from app.services.generation_service import generate_tasks_for_engagement
 
 #: Fields this endpoint is not allowed to change, and why. Kept as a mapping
@@ -35,21 +36,18 @@ _IMMUTABLE_FIELD_REASONS: dict[str, str] = {
 
 
 def visible_tasks(
-    engagement: Engagement, actor_id: uuid.UUID, actor_is_manager_or_admin: bool
+    engagement: Engagement, actor_id: uuid.UUID, actor_role: UserRole
 ) -> list[Task]:
     """The tasks of this engagement the actor may see, per the task visibility rule.
 
-    Reused here so a team member reading an engagement cannot see a task's
-    assignee/reviewer/detail that they could not see through `GET /tasks/{id}`
-    directly — otherwise the task-level visibility rule would be trivially
-    bypassed by reading the parent engagement.
+    Delegates to `task_service.task_is_visible_to` so this stays in lockstep
+    with `GET /tasks/{id}` — otherwise the task-level visibility rule would be
+    trivially bypassed by reading the parent engagement instead.
     """
-    if actor_is_manager_or_admin:
-        return list(engagement.tasks)
     return [
         task
         for task in engagement.tasks
-        if task.assignee_id == actor_id or task.reviewer_id == actor_id
+        if task_service.task_is_visible_to(task, actor_id, actor_role)
     ]
 
 
@@ -58,15 +56,20 @@ async def load_engagement(
     engagement_id: uuid.UUID,
     *,
     actor_id: uuid.UUID | None = None,
-    actor_is_manager_or_admin: bool = False,
+    actor_role: UserRole | None = None,
 ) -> Engagement:
     """Load an engagement, optionally applying the actor's visibility rule.
 
     `actor_id` is opt-in, the same way `task_service.load_task` is: internal
     callers (creation, generate-next, auto-renew) that are already
     manager-gated at the route pass no actor and get the unfiltered load.
-    Only the read route passes one. A team member with no task in this
-    engagement gets a 404, not a 403, matching the task-level rule.
+    Only the read route passes one.
+
+    An admin sees every engagement. A manager sees only engagements they
+    manage — not every engagement, the way "manager or admin" used to be
+    treated as one bucket. A team member sees only engagements in which they
+    have at least one visible task. Anyone excluded gets a 404, not a 403,
+    matching the task-level rule.
     """
     result = await session.execute(
         select(Engagement)
@@ -77,8 +80,12 @@ async def load_engagement(
     engagement = result.scalar_one_or_none()
     if engagement is None:
         raise NotFoundError("Engagement not found")
-    if actor_id is not None and not actor_is_manager_or_admin:
-        if not visible_tasks(engagement, actor_id, actor_is_manager_or_admin):
+    if actor_id is not None and actor_role is not None and actor_role is not UserRole.ADMIN:
+        if actor_role is UserRole.MANAGER:
+            visible = engagement.manager_id == actor_id
+        else:
+            visible = bool(visible_tasks(engagement, actor_id, actor_role))
+        if not visible:
             raise NotFoundError("Engagement not found")
     return engagement
 
@@ -87,17 +94,20 @@ async def list_engagements(
     session: AsyncSession,
     *,
     actor_id: uuid.UUID,
-    actor_is_manager_or_admin: bool,
+    actor_role: UserRole,
 ) -> list[Engagement]:
-    """Managers and admins see every engagement; a team member sees only the
-    engagements in which they have at least one task, as assignee or reviewer.
+    """An admin sees every engagement. A manager sees only the engagements
+    they manage. A team member sees only the engagements in which they have
+    at least one task, as assignee or reviewer.
     """
     query = (
         select(Engagement)
         .options(selectinload(Engagement.tasks))
         .where(Engagement.deleted_at.is_(None))
     )
-    if not actor_is_manager_or_admin:
+    if actor_role is UserRole.MANAGER:
+        query = query.where(Engagement.manager_id == actor_id)
+    elif actor_role is not UserRole.ADMIN:
         query = query.where(
             Engagement.id.in_(
                 select(Task.engagement_id).where(
