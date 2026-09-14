@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -80,13 +80,45 @@ def _check_actor_may_act(
         raise PermissionDeniedError("Only the assignee or a manager may update this task")
 
 
+def visibility_clause(actor_id: uuid.UUID, actor_role: UserRole):
+    """The WHERE clause restricting tasks to what this role may see.
+
+    Per-role, not just "manager or admin vs. everyone else": a team member
+    sees only tasks assigned to them, a manager sees only tasks where they are
+    the named reviewer, and an admin sees everything (clause is None). This is
+    the single source of truth for that split — `list_tasks`, `load_task`, and
+    `task_is_visible_to` all defer to it so the three stay in lockstep.
+    """
+    if actor_role is UserRole.ADMIN:
+        return None
+    if actor_role is UserRole.MANAGER:
+        return Task.reviewer_id == actor_id
+    return Task.assignee_id == actor_id
+
+
+def _require_reviewer_or_admin(
+    task: Task, actor_id: uuid.UUID, actor_role: UserRole
+) -> None:
+    """Relational gate for the staffing/deadline/delete/restore PATCH routes.
+
+    Those routes are already role-gated to manager/admin at the dependency
+    level, but that alone would let any manager touch any task. A manager may
+    only modify a task they are the named reviewer of; an admin may modify
+    any task. A manager who is not this task's reviewer gets a 404, matching
+    the read-side visibility rule, so the response does not itself confirm
+    the task exists.
+    """
+    if actor_role is UserRole.MANAGER and task.reviewer_id != actor_id:
+        raise NotFoundError("Task not found")
+
+
 async def load_task(
     session: AsyncSession,
     task_id: uuid.UUID,
     *,
     include_deleted: bool = False,
     actor_id: uuid.UUID | None = None,
-    actor_is_manager_or_admin: bool = False,
+    actor_role: UserRole | None = None,
 ) -> Task:
     """Load a task, optionally applying the actor's visibility rule.
 
@@ -96,17 +128,18 @@ async def load_task(
     Only the read route passes an actor, which is what makes the visibility
     rule apply there without changing every other caller's behaviour.
 
-    When an actor is given and is not a manager/admin, the task is visible
-    only if they are its assignee or its named reviewer — anyone else gets a
-    404 (not 403), since a 403 would itself confirm the task exists.
+    When an actor is given, `visibility_clause` decides what they may see: a
+    team member only their own assigned tasks, a manager only tasks they
+    review, an admin everything. Anyone excluded gets a 404 (not 403), since
+    a 403 would itself confirm the task exists.
     """
     query = select(Task).options(selectinload(Task.reviews)).where(Task.id == task_id)
     if not include_deleted:
         query = query.where(Task.deleted_at.is_(None))
-    if actor_id is not None and not actor_is_manager_or_admin:
-        query = query.where(
-            or_(Task.assignee_id == actor_id, Task.reviewer_id == actor_id)
-        )
+    if actor_id is not None and actor_role is not None:
+        clause = visibility_clause(actor_id, actor_role)
+        if clause is not None:
+            query = query.where(clause)
     result = await session.execute(query)
     task = result.scalar_one_or_none()
     if task is None:
@@ -114,20 +147,19 @@ async def load_task(
     return task
 
 
-def task_is_visible_to(
-    task: Task, actor_id: uuid.UUID, actor_is_manager_or_admin: bool
-) -> bool:
+def task_is_visible_to(task: Task, actor_id: uuid.UUID, actor_role: UserRole) -> bool:
     """The same visibility predicate as `load_task`, for filtering collections.
 
-    Used to strip tasks a team member may not see out of an embedded list
-    (an engagement's `tasks[]`), so Fix 1 cannot be bypassed by reading the
-    parent resource instead of the task directly.
+    Used to strip tasks a team member (or a manager who is not the reviewer)
+    may not see out of an embedded list (an engagement's `tasks[]`), so the
+    task-level rule cannot be bypassed by reading the parent resource instead
+    of the task directly.
     """
-    return (
-        actor_is_manager_or_admin
-        or task.assignee_id == actor_id
-        or task.reviewer_id == actor_id
-    )
+    if actor_role is UserRole.ADMIN:
+        return True
+    if actor_role is UserRole.MANAGER:
+        return task.reviewer_id == actor_id
+    return task.assignee_id == actor_id
 
 
 async def _require_active_user(
@@ -198,6 +230,7 @@ async def update_assignment(
     session: AsyncSession,
     task_id: uuid.UUID,
     actor_id: uuid.UUID,
+    actor_role: UserRole,
     assignee_id: uuid.UUID | None = _UNSET,
     reviewer_id: uuid.UUID | None = _UNSET,
 ) -> Task:
@@ -226,8 +259,11 @@ async def update_assignment(
         raise NotFoundError("Task not found")
     if task.deleted_at is not None:
         raise ConflictError("This task is deleted. Restore it first.")
+    _require_reviewer_or_admin(task, actor_id, actor_role)
 
     if reviewer_id is not _UNSET:
+        if actor_role is not UserRole.ADMIN:
+            raise PermissionDeniedError("Only an admin may change a task's reviewer")
         if reviewer_id is None:
             raise ConflictError("A task must always have a reviewer")
         await _require_active_user(session, reviewer_id, "Reviewer")
@@ -265,8 +301,10 @@ async def update_deadline(
     task_id: uuid.UUID,
     due_date: date | None,
     actor_id: uuid.UUID,
+    actor_role: UserRole,
 ) -> Task:
     task = await load_task(session, task_id)
+    _require_reviewer_or_admin(task, actor_id, actor_role)
     task.due_date = due_date
     task.updated_by = actor_id
     await session.commit()
@@ -323,7 +361,11 @@ async def create_adhoc_task(
 
 
 async def soft_delete_task(
-    session: AsyncSession, task_id: uuid.UUID, reason: str, actor_id: uuid.UUID
+    session: AsyncSession,
+    task_id: uuid.UUID,
+    reason: str,
+    actor_id: uuid.UUID,
+    actor_role: UserRole,
 ) -> Task:
     """Deletion is a separate axis from workflow status, not a status value.
 
@@ -337,6 +379,7 @@ async def soft_delete_task(
     whoever last edited the row.
     """
     task = await load_task(session, task_id)
+    _require_reviewer_or_admin(task, actor_id, actor_role)
     task.deleted_at = datetime.now(timezone.utc)
     task.deleted_by = actor_id
     task.deletion_reason = reason
@@ -346,9 +389,10 @@ async def soft_delete_task(
 
 
 async def restore_task(
-    session: AsyncSession, task_id: uuid.UUID, actor_id: uuid.UUID
+    session: AsyncSession, task_id: uuid.UUID, actor_id: uuid.UUID, actor_role: UserRole
 ) -> Task:
     task = await load_task(session, task_id, include_deleted=True)
+    _require_reviewer_or_admin(task, actor_id, actor_role)
     if task.deleted_at is None:
         raise ConflictError("This task is not deleted")
 

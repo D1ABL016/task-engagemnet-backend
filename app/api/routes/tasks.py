@@ -44,8 +44,9 @@ async def list_tasks(
         else query.where(Task.deleted_at.is_(None))
     )
 
-    if not current_user.is_manager_or_admin:
-        query = query.where(Task.assignee_id == current_user.id)
+    clause = task_service.visibility_clause(current_user.id, current_user.role)
+    if clause is not None:
+        query = query.where(clause)
     if status_filter is not None:
         query = query.where(Task.status == status_filter)
     if engagement_id is not None:
@@ -67,7 +68,7 @@ async def read_task(
         session,
         task_id,
         actor_id=current_user.id,
-        actor_is_manager_or_admin=current_user.is_manager_or_admin,
+        actor_role=current_user.role,
     )
 
 
@@ -184,7 +185,7 @@ async def update_assignment(
     # naming just the reviewer leaves the assignee (and status) untouched.
     fields = payload.model_dump(exclude_unset=True)
     return await task_service.update_assignment(
-        session, task_id, current_user.id, **fields
+        session, task_id, current_user.id, current_user.role, **fields
     )
 
 
@@ -196,7 +197,7 @@ async def update_deadline(
     session: AsyncSession = Depends(get_session),
 ) -> Task:
     return await task_service.update_deadline(
-        session, task_id, payload.due_date, current_user.id
+        session, task_id, payload.due_date, current_user.id, current_user.role
     )
 
 
@@ -208,7 +209,7 @@ async def delete_task(
     session: AsyncSession = Depends(get_session),
 ) -> Task:
     return await task_service.soft_delete_task(
-        session, task_id, payload.reason, current_user.id
+        session, task_id, payload.reason, current_user.id, current_user.role
     )
 
 
@@ -218,4 +219,6 @@ async def restore_task(
     current_user: CurrentUser = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> Task:
-    return await task_service.restore_task(session, task_id, current_user.id)
+    return await task_service.restore_task(
+        session, task_id, current_user.id, current_user.role
+    )
