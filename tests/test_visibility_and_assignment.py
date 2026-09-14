@@ -85,37 +85,20 @@ async def test_manager_can_read_any_task(
 
 
 @pytest.mark.asyncio
-async def test_team_member_engagement_list_only_includes_engagements_with_their_own_tasks(
+async def test_team_member_engagement_list_is_always_empty(
     http_client,
     assigned_task,
-    manager_user,
     team_member_user,
     other_team_member_user,
-    acme_client,
-    gst_service_type,
     auth_headers_for,
 ):
-    manager_headers = auth_headers_for(manager_user)
-    # A second, unrelated one-time engagement neither team member has a task in.
-    await http_client.post(
-        "/api/v1/engagements",
-        headers=manager_headers,
-        json={
-            "client_id": str(acme_client.id),
-            "service_type_id": str(gst_service_type.id),
-            "manager_id": str(manager_user.id),
-            "engagement_type": "one_time",
-            "start_date": "2026-09-14",
-        },
-    )
-
+    """Engagements are a manager/admin surface: a team member sees none at
+    all, even one they have a task in."""
     own_listing = await http_client.get(
         "/api/v1/engagements", headers=auth_headers_for(team_member_user)
     )
     assert own_listing.status_code == 200
-    engagement_ids = {row["id"] for row in own_listing.json()}
-    assert str(assigned_task.engagement_id) in engagement_ids
-    assert len(own_listing.json()) == 1
+    assert own_listing.json() == []
 
     unrelated_listing = await http_client.get(
         "/api/v1/engagements", headers=auth_headers_for(other_team_member_user)
@@ -154,19 +137,17 @@ async def test_team_member_engagement_detail_404_when_no_task_in_it(
 
 
 @pytest.mark.asyncio
-async def test_team_member_engagement_detail_embeds_only_their_own_tasks(
+async def test_team_member_engagement_detail_404s_even_as_the_tasks_assignee(
     http_client, assigned_task, team_member_user, auth_headers_for
 ):
-    """The engagement has three tasks; team_member_user is the assignee of only
-    the first. Reading the engagement must not leak the other two.
-    """
+    """Being the assignee of a task in this engagement used to grant read
+    access to the engagement; it no longer does — engagements are a
+    manager/admin surface only."""
     response = await http_client.get(
         f"/api/v1/engagements/{assigned_task.engagement_id}",
         headers=auth_headers_for(team_member_user),
     )
-    assert response.status_code == 200
-    tasks = response.json()["tasks"]
-    assert [task["id"] for task in tasks] == [str(assigned_task.id)]
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
