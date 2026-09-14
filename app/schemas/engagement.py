@@ -27,9 +27,14 @@ class EngagementUpdate(BaseModel):
 
 
 class EngagementCreate(BaseModel):
+    """`manager_id` is optional: a manager cannot name themselves — the
+    service forces it to the creating manager — so only an admin, who has no
+    natural owner to default to, actually needs to supply it.
+    """
+
     client_id: uuid.UUID
     service_type_id: uuid.UUID
-    manager_id: uuid.UUID
+    manager_id: uuid.UUID | None = None
     engagement_type: EngagementType
     recurrence: RecurrenceFrequency | None = None
     start_date: date

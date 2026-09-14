@@ -113,7 +113,9 @@ async def list_engagements(
     return list(result.scalars().all())
 
 
-async def _validate_references(session: AsyncSession, payload: EngagementCreate) -> None:
+async def _validate_references(
+    session: AsyncSession, payload: EngagementCreate, manager_id: uuid.UUID
+) -> None:
     client = await session.get(Client, payload.client_id)
     if client is None or client.deleted_at is not None or not client.is_active:
         raise ConflictError("Client does not exist or is inactive")
@@ -122,7 +124,7 @@ async def _validate_references(session: AsyncSession, payload: EngagementCreate)
     if service_type is None or service_type.deleted_at is not None or not service_type.is_active:
         raise ConflictError("Service type does not exist or is inactive")
 
-    manager = await session.get(AppUser, payload.manager_id)
+    manager = await session.get(AppUser, manager_id)
     if manager is None or manager.deleted_at is not None or not manager.is_active:
         raise ConflictError("Manager does not exist or is inactive")
     if manager.role not in (UserRole.MANAGER, UserRole.ADMIN):
@@ -130,13 +132,30 @@ async def _validate_references(session: AsyncSession, payload: EngagementCreate)
 
 
 async def create_engagement(
-    session: AsyncSession, payload: EngagementCreate, actor_id: uuid.UUID | None
+    session: AsyncSession,
+    payload: EngagementCreate,
+    actor_id: uuid.UUID | None,
+    actor_role: UserRole,
 ) -> Engagement:
     """Create an engagement and its tasks in one transaction.
 
     An engagement never exists without the tasks its service type defines.
+
+    `manager_id` is not taken from the payload as-is: a manager is always
+    forced to own what they create (`payload.manager_id`, if sent, is
+    ignored), since letting a manager name someone else as owner would let
+    them hand off accountability for an engagement they never intend to
+    manage. Only an admin, who owns nothing themselves by default, must name
+    one explicitly.
     """
-    await _validate_references(session, payload)
+    if actor_role is UserRole.MANAGER:
+        manager_id = actor_id
+    else:
+        if payload.manager_id is None:
+            raise ConflictError("manager_id is required")
+        manager_id = payload.manager_id
+
+    await _validate_references(session, payload, manager_id)
 
     if payload.engagement_type is EngagementType.RECURRING:
         period_start, period_end = period_bounds(payload.recurrence, payload.start_date)
@@ -147,7 +166,7 @@ async def create_engagement(
     engagement = Engagement(
         client_id=payload.client_id,
         service_type_id=payload.service_type_id,
-        manager_id=payload.manager_id,
+        manager_id=manager_id,
         engagement_type=payload.engagement_type,
         recurrence=payload.recurrence,
         start_date=anchor_date,

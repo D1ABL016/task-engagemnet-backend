@@ -47,7 +47,9 @@ async def create_engagement(
     current_user: CurrentUser = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> Engagement:
-    return await engagement_service.create_engagement(session, payload, current_user.id)
+    return await engagement_service.create_engagement(
+        session, payload, current_user.id, current_user.role
+    )
 
 
 @router.get("", response_model=list[EngagementResponse])
