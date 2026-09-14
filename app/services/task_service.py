@@ -74,10 +74,9 @@ def _check_actor_may_act(
             )
         return
 
-    is_manager_or_admin = actor_role in (UserRole.MANAGER, UserRole.ADMIN)
     is_assignee = task.assignee_id == actor_id
-    if not (is_assignee or is_manager_or_admin):
-        raise PermissionDeniedError("Only the assignee or a manager may update this task")
+    if not (is_assignee or is_admin):
+        raise PermissionDeniedError("Only the assignee or an admin may update this task")
 
 
 def visibility_clause(actor_id: uuid.UUID, actor_role: UserRole):
